@@ -1,0 +1,105 @@
+---
+title: "Primary TCR repertoire analyses using Immunarch"
+output: html_notebook
+---
+1) Load packages
+```{r}
+library(tidyverse)
+#install.packages('immunarch') #только перед первым запуском убрать коммент (#) в начале строчки
+library(immunarch)
+```
+
+2) Загрузить репертуары (обработанные nc.vdj. файлы)
+```{r}
+#### ENTER your path ####
+# Create new folder contating only nc.vdj. files that you want to analyse
+# Change path to the path of this directory ()
+path_to_folder <- '../NGS_tools/immunarch/test_samples'#enter path to vdj folder in NGS_seq_data (e.g. 'GE44_output/vdj_nc')
+#if you want to analyse samples sperartely - put them into different folders and load separately
+
+#### don't change if you are not sure ####
+#Path for MacOS with LTI disk! If you're using Windows or dont have LTI disk - change path to applicaple one
+path_to_seq_data <- paste0('~/../../Volumes/LTI/BigData/NGS/NGS_seq_data/', path_to_folder)
+path_to_res <- paste0(path_to_seq_data, '/../immunarch_results/') #path to results
+dir.create(file.path(path_to_res), showWarnings = FALSE) #creates results folder
+reps <- repLoad(path_to_seq_data, .format='vdjtools')
+names(reps$data) #print names of loaded files
+```
+
+3) Summary количества клонов/клеток
+```{r}
+#### Number of clonotypes ####
+  volume <- repExplore(reps$data, "volume", .col="nt") %>% vis() 
+  volume
+  
+ repExplore(reps$data, "volume", .col="nt") %>% vis()  %>% fixVis()
+  pdf(paste0(path_to_res, 'volume.pdf')) #saves image to results folder
+    print(volume)
+    dev.off()
+  
+#### Number of cells ####
+  count <- repExplore(reps$data, "count", .col="nt") %>% vis() 
+  count
+  
+  pdf(paste0(path_to_res, 'count.pdf'), 15, 5) #saves image to results folder
+    print(count)
+    dev.off()
+    
+#### Number of clones ####
+  clones <- repExplore(reps$data, "clones", .col="aa+v") %>% vis() 
+  clones
+  
+  pdf(paste0(path_to_res, 'aa_v_clones.pdf')) #saves image to results folder
+    print(clones)
+    dev.off()
+    
+#### Distibution of lengthes of AA clonotypes ####
+  name_of_sample_to_look_at <- "nc.vdj.pLTI1507-0m-KTF-pos.clonotypes.TRB"
+  lengthes <- repExplore(reps$data[name_of_sample_to_look_at], "len", .col="aa") %>% vis() 
+  lengthes
+  
+  pdf(paste0(path_to_res, name_of_sample_to_look_at, '_lengthes.pdf'), 15,5) #saves image to results folder
+    print(lengthes)
+    dev.off()
+    
+#### Number of clones occuping 50% of repertoire ####
+  clonality <- repClonality(reps$data, "clonal.prop", .perc=50) %>%  vis()
+  clonality
+  
+  pdf(paste0(path_to_res, 'clonality.pdf')) #saves image to results folder
+    print(clonality)
+  dev.off()
+
+
+#### Diversity ####
+  diversity <- repDiversity(reps$data, .method="inv.simp", .col="nt") %>% vis() 
+  diversity
+  
+  pdf(paste0(path_to_res, 'diversity(Inverse_Simpson).pdf')) #saves image to results folder
+    print(diversity)
+  dev.off()
+```
+
+4) Пересечение между образцами
+```{r}
+#### NT intersection (checks for contamination) ####
+  overlap_nt <- repOverlap(reps$data,
+           .col="nt+v",
+           .method="overlap") %>% vis() 
+  overlap_nt
+  
+  pdf(paste0(path_to_res, 'nt_v_overlap.pdf'), 25,25) #saves image to results folder
+    print(overlap_nt)
+    dev.off()
+    
+#### AA intersection (true overlap) ####
+  overlap_aa <- repOverlap(reps$data,
+           .col="aa+v",
+           .method="overlap") %>% vis() 
+  overlap_aa
+  
+  pdf(paste0(path_to_res, 'aa_v_overlap.pdf'), 25,25) #saves image to results folder
+    print(overlap_aa)
+    dev.off()
+    
+```

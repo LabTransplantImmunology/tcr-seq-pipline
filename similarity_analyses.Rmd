@@ -1,0 +1,378 @@
+---
+title: "TCR similarity analyses (clusters, motifs, VDJusage)"
+output: html_notebook
+---
+
+1) Построение "кластеров" антиген специфичных ТКР
+```{r clusters, eval=FALSE}
+library(data.table)
+library("igraph")
+library("data.table")
+#install.packages('stringdist')
+library("stringdist")
+#install.packages('BiocManager')
+#BiocManager::install("Biostrings")
+library("Biostrings")
+library("dplyr")
+library("tibble")
+library("ggplot2")
+library(RColorBrewer)
+library(tidyr)
+
+#ENTER YOUR PATH AND FILE NAME
+path_to_folder <- '~/../../Volumes/LTI/BigData/NGS/NGS_tools/clusters/'
+file_name <- 'test_samples/all_LLY.txt'
+all_enr <- fread(paste0(path_to_folder,file_name))
+
+#creates results folder in path_to_folder
+path_results <- paste0(path_to_folder, 'results/')
+dir.create(file.path(path_results), showWarnings = FALSE)
+
+  
+#Дайте название для графов (например, название эпитопа)
+name_cluster = 'LLY'
+
+#### choose distance - Levestein or Hamming ####
+
+clustering_cdr3aa<-function(df,max_errs=1,method_clustering) {
+  df = df %>% group_by(cdr3aa,v,j,patient,epi) %>% as.data.table()
+  seqs = df$cdr3aa
+  graph<-graph.empty(n = length(seqs), directed=F)
+  tmp<-stringdistmatrix(seqs,seqs,method=method_clustering)
+  graph<-add.edges(graph, t(which(tmp<=max_errs,arr.ind=T)))
+  graph = graph %>% set_edge_attr('weight', value = tmp[tmp<=max_errs])
+  graph<-igraph::simplify(graph)
+  graph<-set.vertex.attribute(graph, 'label', V(graph), seqs)
+  graph<-set.vertex.attribute(graph, 'patient', V(graph), df$patient)
+  graph<-set.vertex.attribute(graph, 'v', V(graph), df$v)
+  graph<-set.vertex.attribute(graph, 'j', V(graph), df$j)
+  graph<-set.vertex.attribute(graph, 'epi', V(graph), df$epi)
+  return(graph)
+}
+
+### selects top 10 V-genes ###
+top_vg = all_enr %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table() %>% arrange(desc(v_n)) %>% head(10)
+if (nrow(all_enr %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table()) > 10) {
+  ant = all_enr %>% mutate(v = ifelse(v %in% top_vg$v,v,"others")) %>% as.data.table()
+} else {
+  ant = all_enr
+}
+### selects top 10 J-genes ###
+top_jg = all_enr %>% group_by(j) %>% summarise(j_n = n()) %>% as.data.table() %>% arrange(desc(j_n)) %>% head(10)
+if (nrow(all_enr %>% group_by(j) %>% summarise(j_n = n()) %>% as.data.table()) > 10) {
+  ant = ant %>% mutate(j = ifelse(j %in% top_jg$j,j,"others")) %>% as.data.table()
+} else {
+  ant = ant
+}
+
+#Выберем тип расстояния (Levestein (lv) или Hamming (hamming)) и максимальное расстояние
+method_clustering <- 'hamming'
+max_dist <- 2
+
+#Кластеризуем последовательности
+cluster = clustering_cdr3aa(all_enr, max_dist, method_clustering)
+to_gephi_cluster = cluster
+E(to_gephi_cluster)$weight=(1/(E(to_gephi_cluster)$weight+1))
+#сохраним GML формат для Gephi
+write_graph(to_gephi_cluster,paste0('~/../../Volumes/LTI/BigData/NGS/NGS_tools/clusters/results/',name_cluster,'.gml'), format = "gml")
+cluster = delete.vertices(simplify(cluster), degree(cluster)==0) #удаляет несоединенные вершины
+
+sub_tit = paste('Clustered ', gorder(cluster), ' out of ', nrow(all_enr), ' clones.')
+```
+
+```{r plot patients}
+### График с цветами, отражающими пациентов ============
+set.seed(42)
+
+#NB - количество цветов должно быть больше или равно числу пациентов!
+coul1 <- c('#72D473', '#447845')
+           #  '#D6EC74', '#DCB977', '#E69696', '#7AA5E5', '#A487E8', '#E991EB', '#2C9C86', '#AC8E61', '#CFBCD0', '#587196', '#447845')
+           
+V(cluster)$color = coul1[as.numeric(as.factor(V(cluster)$patient))] #Цвета вершин отражают пациентов
+
+legend_df = data.frame(attr = unique(vertex_attr(cluster, "patient")),
+                         color = unique(V(cluster)$color))
+legend_df  = legend_df[order(legend_df$attr), c(1, 2)]
+
+# Запускать НЕ построчно (блоком до конца chunk)
+pdf(paste0(path_results, name_cluster, '_pateints.pdf'), 6,6)
+clust_plot_patient <- plot.igraph(cluster, layout = layout_nicely, asp = 1,
+            vertex.label = NA,
+            vertex.size=5,
+            vertex.frame.color="#343434",
+            vertex.frame.width=3,
+            ## edge
+            edge.label = E(cluster)$weight/2,
+            edge.label.cex = 0.4,
+            edge.color = '#cccccc',
+            edge.width=4/(E(cluster)$weight+1),
+            edge.lty = "solid",        
+            edge.curved = 0
+)
+
+type_dist <- paste('max Hamming ', max_dist, sep='')
+title(main=paste(name_cluster, type_dist,sep='\n'), sub = sub_tit, cex.main=0.8, cex.sub=0.6)
+legend_df$color = as.character(legend_df$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_df$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_df$color,
+       bty = "n",
+       title = "Sources",
+       cex=0.5, pt.cex = 0.5)
+dev.off()
+```
+```{r plot epitopes}
+### График с цветами, отражающими эпитопы ============
+set.seed(42)
+
+#NB - количество цветов должно быть больше или равно числу эпитопов!
+coul1 <- c('#E69696')
+
+V(cluster)$color = coul1[as.numeric(as.factor(V(cluster)$epi))] #Цвета вершин отражают пациентов
+
+##### альтернастива - можно затать конкретные цвета для пациентов/эпитопов #####
+#coul1 <- ifelse(V(cluster)$epi == 'YLQ', "#E991EB", ifelse(V(cluster)$epi == 'LLY', "#447845", '#343434'))
+#V(cluster)$color = coul1
+
+legend_df = data.frame(attr = unique(vertex_attr(cluster, "epi")),
+                         color = unique(V(cluster)$color))
+legend_df  = legend_df[order(legend_df$attr), c(1, 2)]
+
+# Запускать НЕ построчно (блоком до конца chunk)
+pdf(paste0(path_results, name_cluster, '_epitopes.pdf'), 6,6)
+clust_plot_epi <- plot.igraph(cluster, layout = layout_nicely, asp = 1,
+            vertex.label = NA,
+            vertex.size=5,
+            vertex.frame.color="#343434",
+            vertex.frame.width=3,
+            ## edge
+            edge.label = E(cluster)$weight/2,
+            edge.label.cex = 0.4,
+            edge.color = '#cccccc',
+            edge.width=4/(E(cluster)$weight+1),
+            edge.lty = "solid",        
+            edge.curved = 0
+)
+
+type_dist <- paste('max Hamming ', max_dist, sep='')
+title(main=paste(name_cluster, type_dist,sep='\n'), sub = sub_tit, cex.main=0.8, cex.sub=0.6)
+legend_df$color = as.character(legend_df$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_df$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_df$color,
+       bty = "n",
+       title = "Specificity",
+       cex=0.5, pt.cex = 0.5)
+dev.off()
+```
+```{r plot v-genes}
+### График с цветами, отражающими V-гены ============
+set.seed(42)
+
+#цветами обозначим только топ 10 самых часто используемых V-генов
+coul1 <- c('#72D473', '#69EBD0', '#D6EC74', '#DCB977', '#E69696', '#7AA5E5', '#A487E8', '#E991EB',
+                  '#2C9C86', '#AC8E61')
+
+if (nrow(all_enr %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table()) > 10) {
+  my_color <- ifelse(V(cluster)$v == 'others', "#A9A9A9", coul1[as.numeric(as.factor(V(cluster)$v))])
+} else {
+  my_color <- coul1[as.numeric(as.factor(V(cluster)$v))]
+}
+V(cluster)$color = my_color
+
+legend_df = data.frame(attr = unique(vertex_attr(cluster, "v")),
+                         color = unique(V(cluster)$color))
+legend_df  = legend_df[order(legend_df$attr), c(1, 2)]
+
+# Запускать НЕ построчно (блоком до конца chunk)
+pdf(paste0(path_results, name_cluster, '_V_genes.pdf'), 6,6)
+clust_plot_v <- plot.igraph(cluster, layout = layout_nicely, asp = 1,
+            vertex.label = NA,
+            vertex.size=5,
+            vertex.frame.color="#343434",
+            vertex.frame.width=3,
+            ## edge
+            edge.label = E(cluster)$weight/2,
+            edge.label.cex = 0.4,
+            edge.color = '#cccccc',
+            edge.width=4/(E(cluster)$weight+1),
+            edge.lty = "solid",        
+            edge.curved = 0
+)
+
+type_dist <- paste('max Hamming ', max_dist, sep='')
+title(main=paste(name_cluster, type_dist,sep='\n'), sub = sub_tit, cex.main=0.8, cex.sub=0.6)
+legend_df$color = as.character(legend_df$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_df$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_df$color,
+       bty = "n",
+       title = "V-genes",
+       cex=0.5, pt.cex = 0.5)
+dev.off()
+```
+
+Нарисуем PWM (position weigth matix) двух больших кластеров, специфичных к LLY.
+Для этого сначала добавим информацию в какие кластеры попадают CDR3 в изначальную таблицу клонов.
+```{r}
+df.cluster <- data.frame(cdr3aa = character(), cluster_name=integer())
+for (x in 1:length(split(V(cluster)$label, components(cluster)$membership))) {
+ df.cluster.1 <- data.frame(split(V(cluster)$label, components(cluster)$membership)[x], x)
+ names(df.cluster.1) <- c('cdr3aa', 'cluster_name')
+ df.cluster <- rbind(df.cluster, df.cluster.1)
+}
+df.cluster <- df.cluster %>% unique()
+clones_w_clusters = merge(x = all_enr, y = df.cluster, by = "cdr3aa", all.x = TRUE)
+fwrite(clones_w_clusters,file = paste0(path_results, name_cluster, '_w_clusetrs_names.txt'),sep="\t",quote = F)
+
+clones_w_clusters
+
+```
+
+Построим график с обозначениями кластеров
+```{r}
+#Новая функии с cluster как атрибут вершины
+clustering_cdr3aa_w_clusters<-function(df,max_errs=1,method_clustering) {
+  df = df %>% group_by(cdr3aa,patient,epi,v,j,cluster_name) %>% as.data.table()
+  seqs = df$cdr3aa
+  graph<-graph.empty(n = length(seqs), directed=F)
+  tmp<-stringdistmatrix(seqs,seqs,method=method_clustering)
+  graph<-add.edges(graph, t(which(tmp<=max_errs,arr.ind=T)))
+  graph = graph %>% set_edge_attr('weight', value = tmp[tmp<=max_errs])
+  graph<-igraph::simplify(graph)
+  graph<-set.vertex.attribute(graph, 'label', V(graph), seqs)
+  graph<-set.vertex.attribute(graph, 'patient', V(graph), df$patient)
+  graph<-set.vertex.attribute(graph, 'epi', V(graph), df$epi)
+  graph<-set.vertex.attribute(graph, 'v', V(graph), df$v)
+  graph<-set.vertex.attribute(graph, 'j', V(graph), df$j)
+  graph<-set.vertex.attribute(graph, 'cluster_name', V(graph), df$cluster_name)
+  return(graph)
+}
+
+#Кластеризуем последовательности (тот же код, что и кластеризация с цветами по эпитопам)
+cluster = clustering_cdr3aa_w_clusters(clones_w_clusters, max_dist, method_clustering)
+cluster_to_gephi = cluster
+E(cluster_to_gephi)$weight=(1/(E(cluster_to_gephi)$weight+1))
+#сохраним GML формат для Gephi
+write_graph(cluster_to_gephi,paste0(path_results, name_cluster, '_w_clusetrs_names.gml'), format = "gml")
+
+cluster = delete.vertices(simplify(cluster), degree(cluster)==0) #удаляет несоединенные вершины
+
+sub_tit = paste('Clustered ', gorder(cluster), ' out of ', nrow(clones_w_clusters), ' clones.')
+
+### График с цветами, отражающими эпитопы ============
+set.seed(42)
+#NB - количество цветов должно быть больше или равно числу эпитопов!
+coul1 <- c('#E69696', '#7AA5E5', '#A487E8')
+V(cluster)$color = coul1[as.numeric(as.factor(V(cluster)$epi))] #Цвета вершин отражают эпитопы
+
+legend_df = data.frame(attr = unique(vertex_attr(cluster, "epi")),
+                         color = unique(V(cluster)$color))
+legend_df  = legend_df[order(legend_df$attr), c(1, 2)]
+
+# Запускать НЕ построчно (блоком до конца chunk)
+pdf(paste0(path_results, name_cluster, '_cluster_names.pdf'), 6,6)
+clust_plot <- plot.igraph(cluster, layout = layout_nicely, asp = 1,
+            vertex.label = V(cluster)$cluster_name,
+            vertex.label.cex = 0.6,
+            vertex.size=5,
+            vertex.frame.color="#343434",
+            vertex.frame.width=3,
+            ## edge
+            edge.label = E(cluster)$weight/2,
+            edge.label.cex = 0.4,
+            edge.color = '#cccccc',
+            edge.width=4/(E(cluster)$weight+1),
+            edge.lty = "solid",        
+            edge.curved = 0
+)
+
+type_dist <- paste('max Hamming ', max_dist, sep='')
+title(main=paste(name_cluster, type_dist,sep='\n'), sub = sub_tit, cex.main=0.8, cex.sub=0.6)
+legend_df$color = as.character(legend_df$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_df$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_df$color,
+       bty = "n",
+       title = "Specificity",
+       cex=0.5, pt.cex = 0.5)
+dev.off()
+```
+
+Построим PWM для CDR3 из 2 и 3 кластеров
+```{r PWM}
+library(immunarch)
+cluster_number = 2
+cluster <- clones_w_clusters %>% filter(cluster_name==cluster_number) %>% as_tibble() %>% rename('cdr3aa'='CDR3.aa', 'cdr3nt'='CDR3.nt', 'v'='V.name','d'='D.name','j'='J.name') 
+
+#Нам не нужно рисовать кластеры для CDR3 отдельных длин, так как кластер по Хеммингу по определению содержит только CDR3 одной длины (расстояние Хемминга не разрешает инсерции и делеции)
+pdf(paste0(path_results, name_cluster, '_cluster_',cluster_number,'_PWM.pdf'), 6,4)
+getKmers(cluster, .k=unique(nchar(cluster$CDR3.aa)))%>%
+  kmer_profile%>%
+  vis_seqlogo
+dev.off()
+
+
+cluster_number = 3
+cluster <- clones_w_clusters %>% filter(cluster_name==cluster_number) %>% as_tibble()%>% rename('cdr3aa'='CDR3.aa', 'cdr3nt'='CDR3.nt', 'v'='V.name','d'='D.name','j'='J.name') 
+pdf(paste0(path_results, name_cluster, '_cluster_',cluster_number,'_PWM.pdf'), 6,4)
+getKmers(cluster, .k=unique(nchar(cluster$CDR3.aa)))%>%
+  kmer_profile%>%
+  vis_seqlogo
+dev.off()
+```
+
+### Использование V- и J-генов. 
+```{r Vusage}
+#Распределение по длинам
+library(forcats)
+
+all_enr <- fread(paste0(path_to_folder,file_name))
+#all_enr <- clones_w_clusters %>% filter(cluster_name==1)%>% as.data.table()
+name_cluster = 'LLY'
+all_enr_vu <- all_enr %>% mutate(Len = nchar(all_enr$cdr3aa )) %>% select(Len, v) 
+top_vg = all_enr_vu %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table()%>% arrange(desc(v_n)) %>% head(12)%>% as.data.table()
+all_enr_vu = all_enr_vu %>% mutate(v = ifelse(v %in% top_vg$v,v,"others")) %>% count(Len, v) %>% arrange(v)%>% as.data.table()
+
+coul1 <- c('#72D473', '#69EBD0', '#D6EC74', '#DCB977', '#E69696', '#7AA5E5', '#A487E8', '#E991EB', '#2C9C86', '#AC8E61', '#CFBCD0', '#587196', '#447845')
+
+pal <- coul1[2:length(unique(all_enr_vu$v))]
+
+pdf(paste0(path_results, name_cluster, '_Vusage.pdf'), 6,4)
+ggplot(all_enr_vu, aes(fill=forcats::fct_rev(v), y=n, x=Len)) + 
+  geom_bar(position="stack", stat="identity") +
+  ylab("") +
+  scale_fill_manual(values=c(pal, "grey75"))+
+  xlab("CDR3 length, aa") + guides(fill=guide_legend(title="V-gene")) +
+  ggtitle(name_cluster)+ theme(legend.text=element_text(size=6)) + theme_classic(base_size = 7.5)
+dev.off()
+```
+
+```{r Jusage}
+#Распределение по длинам
+library(forcats)
+
+all_enr <- fread(paste0(path_to_folder,file_name))
+#all_enr <- clones_w_clusters %>% filter(cluster_name==1)%>% as.data.table()
+name_cluster = 'LLY'
+all_enr_ju <- all_enr %>% mutate(Len = nchar(all_enr$cdr3aa )) %>% select(Len, j) 
+top_jg = all_enr_ju %>% group_by(j) %>% summarise(j_n = n()) %>% as.data.table()%>% arrange(desc(j_n)) %>% head(12)%>% as.data.table()
+all_enr_ju = all_enr_ju %>% mutate(j = ifelse(j %in% top_jg$j,j,"others")) %>% count(Len, j) %>% arrange(j)%>% as.data.table()
+
+coul1 <- c('#72D473', '#69EBD0', '#D6EC74', '#DCB977', '#E69696', '#7AA5E5', '#A487E8', '#E991EB', '#2C9C86', '#AC8E61', '#CFBCD0', '#587196', '#447845')
+
+pal <- coul1[2:length(unique(all_enr_ju$j))]
+
+pdf(paste0(path_results, name_cluster, '_Jusage.pdf'), 6,4)
+ggplot(all_enr_ju, aes(fill=forcats::fct_rev(j), y=n, x=Len)) + 
+  geom_bar(position="stack", stat="identity") +
+  ylab("") +
+  scale_fill_manual(values=c(pal, "grey75"))+
+  xlab("CDR3 length, aa") + guides(fill=guide_legend(title="J-gene")) +
+  ggtitle(name_cluster)+ theme(legend.text=element_text(size=6)) + theme_classic(base_size = 7.5)
+dev.off()
+```
