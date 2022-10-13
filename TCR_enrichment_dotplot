@@ -1,0 +1,101 @@
+library(tidyverse)
+
+install.packages('immunarch')
+library(immunarch)
+library(data.table)
+library(dplyr)
+epitope = ''
+patient = ''
+TP = ''
+mnth = ''
+fisher_th = 10e-12
+
+pos.file = ''
+neg.file = ''
+tetrpos_file<-fread(pos.file)
+tetrneg_file<-fread(neg.file)
+
+tetrpos = tetrpos_file %>% group_by(cdr3nt,v,j) %>% summarise(count = sum(count),freq = sum(freq))
+tetrneg = tetrneg_file %>% group_by(cdr3nt,v,j) %>% summarise(count = sum(count),freq = sum(freq))
+tetr = merge(tetrneg,tetrpos,by=c("cdr3nt","v","j"),all = T)
+
+min_freq<-min(min(tetr$freq.y[!is.na(tetr$freq.y)]),min(tetr$freq.x[!is.na(tetr$freq.x)]))
+min_freq_floor = floor(log10(min_freq))
+min_freq_floor_log10 = 10^min_freq_floor
+breaks_log10 = sapply(c(min_freq_floor:0),function(x){10^x})
+labels_log10 = c(0,sapply(c((min_freq_floor+1):0),function(x){10^x}))
+axis_ticks = c((min_freq_floor+1):-1)
+limits_log10 = c(min_freq_floor_log10,1)
+print(breaks_log10)
+print(labels_log10)
+
+tetr = tetr %>% mutate (
+  pseudo.count.x = ifelse(is.na(count.x), 0.1, count.x),
+  pseudo.count.y = ifelse(is.na(count.y), 0.1, count.y),
+  pseudo.freq.x = ifelse(is.na(freq.x), min_freq_floor_log10, freq.x),
+  pseudo.freq.y = ifelse(is.na(freq.y), min_freq_floor_log10, freq.y),
+  count.x = ifelse(is.na(count.x), 0, count.x),
+  count.y = ifelse(is.na(count.y), 0, count.y),
+  freq.x = ifelse(is.na(freq.x), 0, freq.x),
+  freq.y = ifelse(is.na(freq.y), 0, freq.y)
+)
+
+############# fisher test ##########################
+sum_neg<-sum(tetr$count.x)
+sum_poz<-sum(tetr$count.y)
+
+tetr = tetr %>% mutate (
+  fisher = mapply(function(x,X,y,Y){
+    mat<-matrix(c(x,X-x,y,Y-y),nrow=2,dimnames = list(c("clone", "non-clone"),c("pos", "neg")))
+    return(fisher.test(mat)$p.value)
+  },x=count.x,X=sum_neg,y=count.y,Y=sum_poz)
+)
+tetr = tetr %>% mutate(fisher.BH = p.adjust(fisher,method = "BH"))
+
+
+######## prepare for plot and name outfiles ########
+# - conditions for colored points
+cond<-(tetr$fisher.BH<fisher_th)&(tetr$count.y>(tetr$count.x*sum_poz/sum_neg))&(tetr$count.y>10)
+#cond2<-(tetr$fisher.BH<fisher_th)&(tetr$count.y<(tetr$count.x*sum_poz/sum_neg))
+tetr = tetr %>% mutate(color = as.factor(ifelse(cond,2,1)),
+                       shape = as.factor(ifelse(cond,2,1)),
+                       size = as.factor(ifelse(cond,2,1)))
+# - prepare where to put pseudo zero (for count axis)
+max_count<-max(max(tetr$count.y),max(tetr$count.x))
+max_log10<-10^ceiling(log10(max_count))
+# - names of axis
+y.lab = 'freq in tetramer+'
+x.lab = 'freq in tetramer-'
+
+# -name of the plot and by the way outfile names
+path_results <- paste0(".")
+dir.create(file.path(path_results), showWarnings = FALSE)
+outfile_pdf = paste0(path_results,patient,'_',epitope,'_',TP,'.pdf')
+outfile_enr_vdj = paste0(path_results,patient,'_',epitope,'_',TP,'.txt')
+
+
+############### plot data ##########################
+library(ggplot2)
+library(scales)
+
+p1 = ggplot(tetr, aes(pseudo.freq.x,pseudo.freq.y,color=color,shape=shape,size=size))+geom_point()+
+  scale_x_log10(breaks = breaks_log10,labels = c(0,sprintf('10^%d',as.integer(axis_ticks)),1),limits = limits_log10)+
+  scale_y_log10(breaks = breaks_log10,labels = c(0,sprintf('10^%d',as.integer(axis_ticks)),1),limits = limits_log10)+
+  xlab(x.lab)+ylab(y.lab)+scale_colour_manual(values = c("black","red", "black"),guide="none")+scale_shape_manual(values = c(1,19),guide="none")+
+  scale_size_manual(values = c(1,2),guide="none")+theme_bw()+
+  theme(axis.title =  element_text(size=18),axis.text = element_text(size=20),plot.title = element_text(size=18),
+        legend.text =  element_text(size=20),legend.title =  element_text(size=20),plot.margin= unit(c(0.5,1,0.5,0.5),"cm"),aspect.ratio = 1)+ggtitle(paste0('p',patient,' ',epitope,' ',TP))
+
+ggsave(filename=outfile_pdf,plot = p1, width=6,height=6)
+
+############# write enr file #######################
+
+res = tetr %>% filter(cond) %>% select(cdr3nt,v,j,count.y,count.x,freq.y,freq.x,fisher,fisher.BH) %>% arrange(fisher.BH)
+res$sum_y = sum_poz
+res$sum_x = sum_neg
+
+ res_enr_vdj = tetrpos_file %>% 
+merge(res, by=c("cdr3nt","v","j")) %>%
+select(count,freq,cdr3nt,cdr3aa,v,d,j,VEnd,DStart,DEnd,JStart) %>% as.data.table()
+
+fwrite(res_enr_vdj,file = outfile_enr_vdj,sep="\t",quote = F)
